@@ -1,16 +1,25 @@
 name: Node.js Discord Test
 
 on:
-  workflow_dispatch:  # 수동 실행
+  workflow_dispatch:
   # schedule:
-  #   - cron: "*/10 * * * *"  # 10분마다 (테스트 끝나면 주석 해제)
+  #   - cron: "*/10 * * * *"  # 10분마다 (UTC)
+
+permissions:
+  contents: write   # ← state.json을 커밋/푸시하려면 필요
 
 jobs:
   send-message:
     runs-on: ubuntu-latest
-    
+    env:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}  # 시크릿(웹훅)
+      LUNLUN: ${{ vars.LUNLUN }}                       # 변수(감시할 유저)
+      # NITTER_BASE: https://nitter.net                # 필요시 커스터마이즈
+
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0        # 커밋 푸시에 안전
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -18,9 +27,19 @@ jobs:
           node-version: 18
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci || npm install
 
-      - name: Run script
+      - name: Run script (fetch & maybe write state.json)
         run: node index.js
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Commit state.json if changed
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: update state.json"
+            git push
+          else
+            echo "No state change to commit."
+          fi
