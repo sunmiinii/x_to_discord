@@ -51,7 +51,7 @@ async function writeState(newId) {
   await fs.writeFile(statePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-// 1) 기반 함수: 최신 트윗의 "공식 URL 문자열"을 반환
+// 1) 최신 트윗의 "공식 URL 문자열"을 반환 (여러 패턴 지원)
 async function fetchLatestTweetUrl(username) {
   const url = `${nitterBase}/${encodeURIComponent(username)}`;
   const res = await fetch(url, {
@@ -60,35 +60,77 @@ async function fetchLatestTweetUrl(username) {
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
     },
   });
-  if (!res.ok) {
-    throw new Error(`Nitter 요청 실패: ${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`Nitter 요청 실패: ${res.status} ${res.statusText}`);
 
   const html = await res.text();
   const $ = cheerio.load(html);
 
-  // /<user>/status/<id> 패턴을 가진 첫 번째 링크에서 id 추출
-  const re = new RegExp(`^/${username}/status/(\\d+)`);
-  let id = null;
+  // 디버그(옵션): 페이지가 이상하면 길이/타이틀 확인
+  // console.log("nitter html length:", html.length);
+  // console.log("page title:", $("title").text());
 
-  $("a").each((_, a) => {
+  // 후보 셀렉터: 트윗 상세 링크에 자주 쓰이는 것들
+  const candidates = $('a.tweet-link, .timeline-item .tweet-date a, a[href*="/status/"]');
+
+  let id = null;
+  let foundHref = null;
+
+  candidates.each((_, a) => {
     const href = $(a).attr("href");
-    const m = href && re.exec(href);
+    if (!href) return;
+
+    // ① 본인 트윗: /<user>/status/<id>(#m 등 옵셔널 앵커)
+    let m = href.match(new RegExp(`^/${username}/status/(\\d+)`));
     if (m) {
-      id = m[1];           // 숫자 ID만
-      return false;        // 첫 번째 매치에서 중단
+      id = m[1];
+      foundHref = href;
+      return false; // 첫 매치 사용
+    }
+
+    // ② /i/status/<id> 형태 (작성자 이름이 링크에 안 나오는 경우)
+    m = href.match(/^\/i\/status\/(\d+)/);
+    if (m) {
+      id = m[1];
+      foundHref = href;
+      return false;
+    }
+
+    // ③ 타 계정 트윗(리트윗 등): /<someone>/status/<id>
+    m = href.match(/^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/);
+    if (m) {
+      id = m[2];
+      foundHref = href;
+      return false;
     }
   });
 
-  // 폴백: 페이지 전체에서 한 번 더 정규식으로 검색
   if (!id) {
-    const m = html.match(new RegExp(`/${username}/status/(\\d+)`));
+    // 폴백: 페이지 전체 텍스트에서라도 /status/<id>를 긁어본다
+    const m =
+      html.match(new RegExp(`/${username}/status/(\\d+)`)) ||
+      html.match(/\/i\/status\/(\d+)/) ||
+      html.match(/\/[A-Za-z0-9_]{1,15}\/status\/(\d+)/);
     if (m) id = m[1];
   }
 
   if (!id) throw new Error("최신 트윗 링크를 찾지 못했습니다.");
 
-  return `https://twitter.com/${username}/status/${id}`;
+  // 최종 URL 만들기
+  let finalUrl;
+  if (foundHref && foundHref.startsWith("/i/status/")) {
+    // /i/status/…는 i/web/status로 바로 공유 가능
+    finalUrl = `https://twitter.com/i/web/status/${id}`;
+  } else {
+    // 작성자명 얻기(없으면 대상 username 사용)
+    let author = username;
+    if (foundHref) {
+      const m = foundHref.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
+      if (m) author = m[1];
+    }
+    finalUrl = `https://twitter.com/${author}/status/${id}`;
+  }
+
+  return finalUrl;
 }
 
 // 2) 래퍼: { id, url } 형태로 반환 (dedup에 쓰기 좋게)
