@@ -14,3 +14,11 @@ jobs:
           curl -H "Content-Type: application/json" \
           -d '{"content":"✅ GitHub Actions에서 디스코드 웹훅 테스트 성공!"}' \
           ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Assert secret presence
+        run: |
+          if [ -z "${{ secrets.DISCORD_WEBHOOK }}" ]; then
+            echo "❌ Secret DISCORD_WEBHOOK is MISSING"; exit 1;
+          else
+            echo "✅ Secret DISCORD_WEBHOOK is PRESENT";
+          fi
