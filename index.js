@@ -51,26 +51,52 @@ async function writeState(newId) {
   await fs.writeFile(statePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
+/ 1) 기반 함수: 최신 트윗의 "공식 URL 문자열"을 반환
 async function fetchLatestTweetUrl(username) {
-  // 1) Nitter에서 해당 유저 페이지 HTML 가져오기
   const url = `${nitterBase}/${encodeURIComponent(username)}`;
   const res = await fetch(url, {
     headers: {
-      // 약간의 헤더를 주면 차단 확률을 낮출 수 있음
       "User-Agent":
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
     },
   });
+  if (!res.ok) {
+    throw new Error(`Nitter 요청 실패: ${res.status} ${res.statusText}`);
+  }
 
-// 폴백: 정규식을 HTML 전체에 한 번 더
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  // /<user>/status/<id> 패턴을 가진 첫 번째 링크에서 id 추출
+  const re = new RegExp(`^/${username}/status/(\\d+)`);
+  let id = null;
+
+  $("a").each((_, a) => {
+    const href = $(a).attr("href");
+    const m = href && re.exec(href);
+    if (m) {
+      id = m[1];           // 숫자 ID만
+      return false;        // 첫 번째 매치에서 중단
+    }
+  });
+
+  // 폴백: 페이지 전체에서 한 번 더 정규식으로 검색
   if (!id) {
     const m = html.match(new RegExp(`/${username}/status/(\\d+)`));
     if (m) id = m[1];
   }
+
   if (!id) throw new Error("최신 트윗 링크를 찾지 못했습니다.");
 
-  const officialUrl = `https://twitter.com/${username}/status/${id}`;
-  return { id, url: officialUrl };
+  return `https://twitter.com/${username}/status/${id}`;
+}
+
+// 2) 래퍼: { id, url } 형태로 반환 (dedup에 쓰기 좋게)
+async function fetchLatestTweet(username) {
+  const url = await fetchLatestTweetUrl(username);
+  const m = url.match(/\/status\/(\d+)/);
+  if (!m) throw new Error("트윗 ID를 URL에서 추출하지 못했습니다.");
+  return { id: m[1], url };
 }
 
 // ── Discord 웹훅으로 전송
