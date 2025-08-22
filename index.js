@@ -12,7 +12,11 @@ import { fileURLToPath } from "url";
  * - DEBUG: "1"이면 상세 로그 출력
  */
 const webhook = process.env.DISCORD_WEBHOOK;
-const user = process.env.LUNLUN;
+const users = (process.env.LUNLUN_LIST || process.env.LUNLUN).split(",").map(s=>s.trim());
+for (const u of users) {
+  const { id, url } = await fetchLatestTweet(u);
+  // u별 state 파일 분리 권장: state-u.json
+}
 const DEBUG = process.env.DEBUG === "1";
 
 // Nitter 후보들(왼쪽부터 시도)
@@ -179,7 +183,13 @@ async function sendToDiscord(content) {
   const res = await fetch(webhook, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
+    body: JSON.stringify({
+        embeds: [{
+        title: `@${user} 새 트윗`,
+        url: latest.url,
+        description: latest.url,
+        }]
+    })
   });
   if (!res.ok) throw new Error(`Discord 전송 실패: ${res.status} ${await res.text()}`);
 }

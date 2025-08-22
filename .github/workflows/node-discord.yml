@@ -2,8 +2,8 @@ name: Node.js Discord Test
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "*/10 * * * *"  # 10분마다 (UTC)
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다 (UTC 기준!)
 
 permissions:
   contents: write   # ← state.json을 커밋/푸시하려면 필요
@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}  # 시크릿(웹훅)
-      LUNLUN: ${{ vars.LUNLUN }}                       # 변수(감시할 유저)
+      LUNLUN: ${{ vars.LUNLUN }}     
+      LUNLUN_LIST: user1,user2,user3                  # 변수(감시할 유저)
       # NITTER_BASE: https://nitter.net                # 필요시 커스터마이즈
 
     steps:
