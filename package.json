@@ -4,5 +4,21 @@
   "type": "module",
   "dependencies": {
     "node-fetch": "^3.3.2"
-  }
+  },
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunmiinii/x_to_discord.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/sunmiinii/x_to_discord/issues"
+  },
+  "homepage": "https://github.com/sunmiinii/x_to_discord#readme"
 }

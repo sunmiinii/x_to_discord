@@ -1,6 +1,7 @@
 import fetch from "node-fetch";
 
 const webhook = process.env.DISCORD_WEBHOOK;
+onsole.log("ENV has DISCORD_WEBHOOK:", Boolean(process.env.DISCORD_WEBHOOK)); // ← true 기대
 
 async function sendMessage() {
   if (!webhook) {
