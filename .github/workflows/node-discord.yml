@@ -12,41 +12,29 @@ jobs:
   send-message:
     runs-on: ubuntu-latest
     env:
-      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}  # 시크릿(웹훅)
-      LUNLUN: ${{ vars.LUNLUN }}     
-      LUNLUN_LIST: user1,user2,user3                  # 변수(감시할 유저)
-      # NITTER_BASE: https://nitter.net                # 필요시 커스터마이즈
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      LUNLUN: ${{ vars.LUNLUN }}
+      # 원하는 인스턴스 순서 (왼쪽부터 시도)
+      NITTER_LIST: https://nitter.net,https://nitter.poast.org,https://n.opnxng.com,https://nitter.fdn.fr,https://nitter.privacydev.net
+      DEBUG: "1"
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # 커밋 푸시에 안전
+          fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Node 20 & sanity
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Debug runtime
-        run: |
+      - run: |
           node -v
           node -p "typeof fetch, typeof File"
-          npm ls undici || true
+          echo "HEAD: $GITHUB_SHA"
+          head -n 5 index.js
 
-      - name: Install dependencies
-        run: npm ci || npm install
+      - name: Install deps
+        run: npm ci || npm i
 
-      - name: Run script (fetch & maybe write state.json)
+      - name: Run script
         run: node index.js
-
-      - name: Commit state.json if changed
-        run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "chore: update state.json"
-            git push
-          else
-            echo "No state change to commit."
-          fi

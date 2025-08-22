@@ -1,4 +1,4 @@
-// import fetch from "node-fetch";
+// index.js v2.1 — multi Nitter + batch send + deep debug
 import * as cheerio from "cheerio";
 import { promises as fs } from "fs";
 import path from "path";
@@ -6,24 +6,41 @@ import { fileURLToPath } from "url";
 
 /**
  * ENV
- * - DISCORD_WEBHOOK: 디스코드 웹훅 URL (Repository secret)
- * - LUNLUN: 감시할 X(트위터) 사용자명 (@ 없이) (Repository variable)
- * - NITTER_BASE: 선택. 기본값 https://nitter.net (원치 않으면 다른 인스턴스)
+ * - DISCORD_WEBHOOK: 디스코드 웹훅 URL (Secret)
+ * - LUNLUN: 감시할 X 사용자명 (@ 제외) (Variable)
+ * - NITTER_LIST: 시도할 Nitter 인스턴스 목록(쉼표 구분)
+ * - NITTER_BASE: (선택) 기본 nitter 인스턴스. 미설정 시 https://nitter.net
+ * - DEBUG: "1"이면 상세로그
  */
+const VERSION = "v2.1";
 const webhook = process.env.DISCORD_WEBHOOK;
 const user = process.env.LUNLUN;
-const nitterBase = process.env.NITTER_BASE || "https://nitter.net";
+const DEBUG = process.env.DEBUG === "1";
 
-// ── 현재 파일 기준으로 repo 루트의 state.json 경로 계산
+// 기본/커스텀 인스턴스 목록 구성
+const nitterBase = process.env.NITTER_BASE || "https://nitter.net";
+const DEFAULT_NITTERS = [
+  nitterBase,
+  "https://nitter.poast.org",
+  "https://n.opnxng.com",
+  "https://nitter.fdn.fr",
+  "https://nitter.privacydev.net"
+];
+const NITTER_LIST = (process.env.NITTER_LIST
+  ? process.env.NITTER_LIST.split(",").map(s => s.trim()).filter(Boolean)
+  : DEFAULT_NITTERS);
+
+// repo 루트의 state.json
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const statePath = path.join(__dirname, "state.json");
 
-// ── 디버그 로그: 환경 세팅 확인
+// 시작 로그
+console.log("Boot:", { VERSION, DEBUG });
 console.log("ENV check:", {
   HAS_WEBHOOK: Boolean(webhook),
   USER: user,
-  NITTER: nitterBase,
+  NITTERS: NITTER_LIST
 });
 
 if (!webhook) {
@@ -31,11 +48,11 @@ if (!webhook) {
   process.exit(1);
 }
 if (!user) {
-  console.error("❌ TW_USER 환경변수가 없습니다.");
+  console.error("❌ LUNLUN 환경변수가 없습니다. (감시할 사용자명을 넣으세요)");
   process.exit(1);
 }
 
-// ── state.json 읽기: 없으면 기본값 반환
+// ── util: 파일 I/O
 async function readState() {
   try {
     const raw = await fs.readFile(statePath, "utf-8");
@@ -44,134 +61,173 @@ async function readState() {
     return { lastId: null, updatedAt: null };
   }
 }
-
-// ── state.json 쓰기: 마지막 트윗 ID와 업데이트 시간 기록
 async function writeState(newId) {
   const data = { lastId: newId, updatedAt: new Date().toISOString() };
   await fs.writeFile(statePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-// 1) 최신 트윗의 "공식 URL 문자열"을 반환 (여러 패턴 지원)
-async function fetchLatestTweetUrl(username) {
-  const url = `${nitterBase}/${encodeURIComponent(username)}`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-    },
-  });
-  if (!res.ok) throw new Error(`Nitter 요청 실패: ${res.status} ${res.statusText}`);
+// ── util: 타임아웃
+function withTimeout(ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return { signal: ctrl.signal, clear: () => clearTimeout(t) };
+}
 
-  const html = await res.text();
+// ── 파서: HTML에서 최근 트윗 여러 개 추출
+function extractRecentFromHtml(username, html, max = 5) {
   const $ = cheerio.load(html);
-
-  // 디버그(옵션): 페이지가 이상하면 길이/타이틀 확인
-  // console.log("nitter html length:", html.length);
-  // console.log("page title:", $("title").text());
-
-  // 후보 셀렉터: 트윗 상세 링크에 자주 쓰이는 것들
   const candidates = $('a.tweet-link, .timeline-item .tweet-date a, a[href*="/status/"]');
-
-  let id = null;
-  let foundHref = null;
+  const seen = new Set();
+  const out = [];
 
   candidates.each((_, a) => {
+    if (out.length >= max) return false;
     const href = $(a).attr("href");
     if (!href) return;
 
-    // ① 본인 트윗: /<user>/status/<id>(#m 등 옵셔널 앵커)
-    let m = href.match(new RegExp(`^/${username}/status/(\\d+)`));
+    // /<author>/status/<id>
+    let m = href.match(/^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/);
     if (m) {
-      id = m[1];
-      foundHref = href;
-      return false; // 첫 매치 사용
+      const [ , author, id ] = m;
+      if (!seen.has(id)) { seen.add(id); out.push({ id, author, href }); }
+      return;
     }
 
-    // ② /i/status/<id> 형태 (작성자 이름이 링크에 안 나오는 경우)
+    // /i/status/<id>
     m = href.match(/^\/i\/status\/(\d+)/);
     if (m) {
-      id = m[1];
-      foundHref = href;
-      return false;
-    }
-
-    // ③ 타 계정 트윗(리트윗 등): /<someone>/status/<id>
-    m = href.match(/^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/);
-    if (m) {
-      id = m[2];
-      foundHref = href;
-      return false;
+      const id = m[1];
+      if (!seen.has(id)) { seen.add(id); out.push({ id, author: username, href }); }
     }
   });
 
-  if (!id) {
-    // 폴백: 페이지 전체 텍스트에서라도 /status/<id>를 긁어본다
-    const m =
-      html.match(new RegExp(`/${username}/status/(\\d+)`)) ||
-      html.match(/\/i\/status\/(\d+)/) ||
-      html.match(/\/[A-Za-z0-9_]{1,15}\/status\/(\d+)/);
-    if (m) id = m[1];
-  }
-
-  if (!id) throw new Error("최신 트윗 링크를 찾지 못했습니다.");
-
-  // 최종 URL 만들기
-  let finalUrl;
-  if (foundHref && foundHref.startsWith("/i/status/")) {
-    // /i/status/…는 i/web/status로 바로 공유 가능
-    finalUrl = `https://twitter.com/i/web/status/${id}`;
-  } else {
-    // 작성자명 얻기(없으면 대상 username 사용)
-    let author = username;
-    if (foundHref) {
-      const m = foundHref.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
-      if (m) author = m[1];
+  // 부족하면 원시 HTML에서 보강
+  if (out.length < max) {
+    const re = /\/(?:i\/status|[A-Za-z0-9_]{1,15}\/status)\/(\d+)/g;
+    let m;
+    while ((m = re.exec(html)) && out.length < max) {
+      const id = m[1];
+      if (!seen.has(id)) {
+        seen.add(id);
+        out.push({ id, author: username, href: `/i/status/${id}` });
+      }
     }
-    finalUrl = `https://twitter.com/${author}/status/${id}`;
+  }
+  return out;
+}
+
+// ── 네트워크: 여러 Nitter 인스턴스에서 최근 트윗 n개 가져오기
+async function fetchRecentTweets(username, max = 5) {
+  const ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+
+  for (const base of NITTER_LIST) {
+    const url = `${base}/${encodeURIComponent(username)}`;
+    try {
+      if (DEBUG) console.log(`→ Try ${base}`);
+      const { signal, clear } = withTimeout(8000);
+      const res = await fetch(url, { headers: { "User-Agent": ua }, signal });
+      clear();
+
+      if (!res.ok) {
+        if (DEBUG) console.log(`  ${base} HTTP ${res.status} — skip`);
+        continue;
+      }
+
+      const html = await res.text();
+      const items = extractRecentFromHtml(username, html, max);
+
+      if (DEBUG) {
+        const $ = cheerio.load(html);
+        console.log(`  [${base}] title="${$("title").text()}" len=${html.length} items=${items.length}`);
+      }
+
+      if (items.length > 0) {
+        // href를 공식 URL로 변환
+        return items.map(({ id, author, href }) => {
+          if (href.startsWith("/i/status/")) {
+            return { id, url: `https://twitter.com/i/web/status/${id}` };
+          }
+          const m = href.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
+          const finalAuthor = m ? m[1] : (author || username);
+          return { id, url: `https://twitter.com/${finalAuthor}/status/${id}` };
+        });
+      }
+      if (DEBUG) console.log(`  ${base} no /status/ found — next`);
+    } catch (e) {
+      if (DEBUG) console.log(`  ${base} ${e.name} — next`);
+      continue;
+    }
   }
 
-  return finalUrl;
+  // 폴백: 정적 렌더
+  try {
+    const fallback = `https://r.jina.ai/http://nitter.net/${encodeURIComponent(username)}`;
+    if (DEBUG) console.log(`→ Fallback ${fallback}`);
+    const res = await fetch(fallback);
+    if (res.ok) {
+      const text = await res.text();
+      const ids = [...text.matchAll(/\/(?:i\/status|[A-Za-z0-9_]{1,15}\/status)\/(\d+)/g)].map(m => m[1]);
+      const uniq = [...new Set(ids)].slice(0, max);
+      if (uniq.length) {
+        return uniq.map(id => ({ id, url: `https://twitter.com/i/web/status/${id}` }));
+      }
+    } else if (DEBUG) {
+      console.log(`  Fallback HTTP ${res.status}`);
+    }
+  } catch (_) {}
+
+  throw new Error("최신 트윗 링크를 찾지 못했습니다.");
 }
 
-// 2) 래퍼: { id, url } 형태로 반환 (dedup에 쓰기 좋게)
+// ── (옵션) 단일 최신만 필요할 때
 async function fetchLatestTweet(username) {
-  const url = await fetchLatestTweetUrl(username);
-  const m = url.match(/\/status\/(\d+)/);
-  if (!m) throw new Error("트윗 ID를 URL에서 추출하지 못했습니다.");
-  return { id: m[1], url };
+  const list = await fetchRecentTweets(username, 1);
+  return list[0]; // { id, url }
 }
 
-// ── Discord 웹훅으로 전송
+// ── Discord 전송
 async function sendToDiscord(content) {
   const res = await fetch(webhook, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content })
   });
   if (!res.ok) throw new Error(`Discord 전송 실패: ${res.status} ${await res.text()}`);
 }
 
+// ── 메인
 (async () => {
   try {
-    // 1) 이전 상태 읽기
     const state = await readState();
     console.log("Prev state:", state);
 
-    // 2) 최신 트윗 가져와서 ID 비교
-    const latest = await fetchLatestTweet(user);
-    console.log("Latest tweet:", latest);
+    // 최근 5개 후보
+    const recents = await fetchRecentTweets(user, 5);
+    console.log("Recent tweets:", recents.map(t => t.id));
 
-    if (state.lastId && state.lastId === latest.id) {
+    // lastId 이후 것만, 오래된 것부터 전송
+    let toSend;
+    if (!state.lastId) {
+      // 첫 실행: 스팸 방지 위해 1건만
+      toSend = recents.slice(0, 1);
+    } else {
+      const idx = recents.findIndex(t => t.id === state.lastId);
+      toSend = idx === -1 ? recents : recents.slice(0, idx);
+    }
+    toSend.reverse();
+
+    if (toSend.length === 0) {
       console.log("🔁 새 트윗 없음. 전송 스킵.");
       process.exit(0);
     }
 
-    // 3) 새 트윗이면 전송
-    await sendToDiscord(`🆕 @${user} 최신 트윗: ${latest.url}`);
+    for (const t of toSend) {
+      await sendToDiscord(`🆕 @${user} 최신 트윗: ${t.url}`);
+    }
 
-    // 4) 상태 업데이트 파일 작성 (커밋은 워크플로우가 처리)
-    await writeState(latest.id);
-    console.log("✅ 상태 업데이트 완료:", latest.id);
+    const newestId = toSend[toSend.length - 1].id;
+    await writeState(newestId);
+    console.log("✅ 상태 업데이트 완료:", newestId);
   } catch (err) {
     console.error("❌ 오류:", err.message);
     process.exit(1);
