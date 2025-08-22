@@ -1,0 +1,25 @@
+name: Node.js Discord Test
+
+on:
+  workflow_dispatch:  # 수동 실행
+  # schedule:
+  #   - cron: "*/10 * * * *"  # 10분마다 (테스트 끝나면 주석 해제)
+
+jobs:
+  send-message:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run script
+        run: node index.js
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
