@@ -11,12 +11,11 @@ import { fileURLToPath } from "url";
  * - NITTER_LIST: 시도할 Nitter 인스턴스 목록(쉼표구분). 없으면 기본 3개 사용
  * - DEBUG: "1"이면 상세 로그 출력
  */
-
 const webhook = process.env.DISCORD_WEBHOOK;
 const users = (process.env.LUNLUN_LIST || process.env.LUNLUN).split(",").map(s=>s.trim());
-    for (const u of users) {
-    const { id, url } = await fetchLatestTweet(u);
-    // u별 state 파일 분리 권장: state-u.json
+for (const u of users) {
+  const { id, url } = await fetchLatestTweet(u);
+  // u별 state 파일 분리 권장: state-u.json
 }
 const DEBUG = process.env.DEBUG === "1";
 
@@ -184,13 +183,7 @@ async function sendToDiscord(content) {
   const res = await fetch(webhook, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-        embeds: [{
-        title: `@${user} 새 트윗`,
-        url: latest.url,
-        description: latest.url,
-        }]
-    })
+    body: JSON.stringify({ content })
   });
   if (!res.ok) throw new Error(`Discord 전송 실패: ${res.status} ${await res.text()}`);
 }
