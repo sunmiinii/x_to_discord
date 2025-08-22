@@ -51,7 +51,7 @@ async function writeState(newId) {
   await fs.writeFile(statePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-/ 1) 기반 함수: 최신 트윗의 "공식 URL 문자열"을 반환
+// 1) 기반 함수: 최신 트윗의 "공식 URL 문자열"을 반환
 async function fetchLatestTweetUrl(username) {
   const url = `${nitterBase}/${encodeURIComponent(username)}`;
   const res = await fetch(url, {
