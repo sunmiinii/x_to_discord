@@ -1,4 +1,4 @@
-// Node 18/20: fetch는 내장. 별도 node-fetch 불필요.
+// import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import { promises as fs } from "fs";
 import path from "path";
@@ -8,25 +8,13 @@ import { fileURLToPath } from "url";
  * ENV
  * - DISCORD_WEBHOOK: 디스코드 웹훅 URL (Repository secret)
  * - LUNLUN: 감시할 X(트위터) 사용자명 (@ 없이) (Repository variable)
- * - NITTER_LIST: 시도할 Nitter 인스턴스 목록(쉼표구분). 없으면 기본 3개 사용
- * - DEBUG: "1"이면 상세 로그 출력
+ * - NITTER_BASE: 선택. 기본값 https://nitter.net (원치 않으면 다른 인스턴스)
  */
 const webhook = process.env.DISCORD_WEBHOOK;
-const users = (process.env.LUNLUN_LIST || process.env.LUNLUN).split(",").map(s=>s.trim());
-for (const u of users) {
-  const { id, url } = await fetchLatestTweet(u);
-  // u별 state 파일 분리 권장: state-u.json
-}
-const DEBUG = process.env.DEBUG === "1";
+const user = process.env.LUNLUN;
+const nitterBase = process.env.NITTER_BASE || "https://nitter.net";
 
-// Nitter 후보들(왼쪽부터 시도)
-const NITTERS = (process.env.NITTER_LIST ||
-  "https://nitter.net,https://nitter.poast.org,https://n.opnxng.com")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
-// ── repo 루트의 state.json 경로 계산
+// ── 현재 파일 기준으로 repo 루트의 state.json 경로 계산
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const statePath = path.join(__dirname, "state.json");
@@ -35,8 +23,7 @@ const statePath = path.join(__dirname, "state.json");
 console.log("ENV check:", {
   HAS_WEBHOOK: Boolean(webhook),
   USER: user,
-  NITTERS,
-  DEBUG
+  NITTER: nitterBase,
 });
 
 if (!webhook) {
@@ -44,7 +31,7 @@ if (!webhook) {
   process.exit(1);
 }
 if (!user) {
-  console.error("❌ LUNLUN 환경변수가 없습니다. (감시할 사용자명을 넣으세요)");
+  console.error("❌ TW_USER 환경변수가 없습니다.");
   process.exit(1);
 }
 
@@ -64,16 +51,25 @@ async function writeState(newId) {
   await fs.writeFile(statePath, JSON.stringify(data, null, 2), "utf-8");
 }
 
-// ── 타임아웃 보조
-function withTimeout(ms) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  return { signal: ctrl.signal, clear: () => clearTimeout(timer) };
-}
+// 1) 최신 트윗의 "공식 URL 문자열"을 반환 (여러 패턴 지원)
+async function fetchLatestTweetUrl(username) {
+  const url = `${nitterBase}/${encodeURIComponent(username)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    },
+  });
+  if (!res.ok) throw new Error(`Nitter 요청 실패: ${res.status} ${res.statusText}`);
 
-// ── HTML에서 최신 트윗 id/href 추출 (여러 패턴 지원)
-function extractLatestIdFromHtml(username, html) {
+  const html = await res.text();
   const $ = cheerio.load(html);
+
+  // 디버그(옵션): 페이지가 이상하면 길이/타이틀 확인
+  // console.log("nitter html length:", html.length);
+  // console.log("page title:", $("title").text());
+
+  // 후보 셀렉터: 트윗 상세 링크에 자주 쓰이는 것들
   const candidates = $('a.tweet-link, .timeline-item .tweet-date a, a[href*="/status/"]');
 
   let id = null;
@@ -83,21 +79,33 @@ function extractLatestIdFromHtml(username, html) {
     const href = $(a).attr("href");
     if (!href) return;
 
-    // ① 본인 트윗: /<user>/status/<id>
+    // ① 본인 트윗: /<user>/status/<id>(#m 등 옵셔널 앵커)
     let m = href.match(new RegExp(`^/${username}/status/(\\d+)`));
-    if (m) { id = m[1]; foundHref = href; return false; }
+    if (m) {
+      id = m[1];
+      foundHref = href;
+      return false; // 첫 매치 사용
+    }
 
-    // ② /i/status/<id>
+    // ② /i/status/<id> 형태 (작성자 이름이 링크에 안 나오는 경우)
     m = href.match(/^\/i\/status\/(\d+)/);
-    if (m) { id = m[1]; foundHref = href; return false; }
+    if (m) {
+      id = m[1];
+      foundHref = href;
+      return false;
+    }
 
-    // ③ 타 계정 트윗(리트윗/고정): /<someone>/status/<id>
+    // ③ 타 계정 트윗(리트윗 등): /<someone>/status/<id>
     m = href.match(/^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/);
-    if (m) { id = m[2]; foundHref = href; return false; }
+    if (m) {
+      id = m[2];
+      foundHref = href;
+      return false;
+    }
   });
 
   if (!id) {
-    // 폴백: 원시 HTML에서라도 /status/<id> 검색
+    // 폴백: 페이지 전체 텍스트에서라도 /status/<id>를 긁어본다
     const m =
       html.match(new RegExp(`/${username}/status/(\\d+)`)) ||
       html.match(/\/i\/status\/(\d+)/) ||
@@ -105,72 +113,27 @@ function extractLatestIdFromHtml(username, html) {
     if (m) id = m[1];
   }
 
-  return { id, foundHref, title: $("title").text(), len: html.length };
-}
+  if (!id) throw new Error("최신 트윗 링크를 찾지 못했습니다.");
 
-// ── 여러 Nitter 인스턴스를 순차 시도해서 최신 트윗 URL 반환
-async function fetchLatestTweetUrl(username) {
-  const ua =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-
-  for (const base of NITTERS) {
-    const url = `${base}/${encodeURIComponent(username)}`;
-    try {
-      const { signal, clear } = withTimeout(8000);
-      const res = await fetch(url, { headers: { "User-Agent": ua }, signal });
-      clear();
-
-      if (!res.ok) {
-        if (DEBUG) console.log(`Nitter ${base} 응답 ${res.status} — 다음으로 시도`);
-        continue;
-      }
-      const html = await res.text();
-
-      const { id, foundHref, title, len } = extractLatestIdFromHtml(username, html);
-      if (DEBUG) console.log(`[${base}] title="${title}" len=${len} id=${id} href=${foundHref || "-"}`);
-
-      if (!id) {
-        if (DEBUG) console.log(`Nitter ${base}에서 /status/ ID를 못 찾음 — 다음으로 시도`);
-        continue;
-      }
-
-      // 최종 URL 만들기
-      if (foundHref && foundHref.startsWith("/i/status/")) {
-        return `https://twitter.com/i/web/status/${id}`;
-      }
-      let author = username;
-      if (foundHref) {
-        const m = foundHref.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
-        if (m) author = m[1];
-      }
-      return `https://twitter.com/${author}/status/${id}`;
-    } catch (e) {
-      if (DEBUG) console.log(`Nitter ${base} 요청 오류(${e.name}) — 다음으로 시도`);
-      continue;
+  // 최종 URL 만들기
+  let finalUrl;
+  if (foundHref && foundHref.startsWith("/i/status/")) {
+    // /i/status/…는 i/web/status로 바로 공유 가능
+    finalUrl = `https://twitter.com/i/web/status/${id}`;
+  } else {
+    // 작성자명 얻기(없으면 대상 username 사용)
+    let author = username;
+    if (foundHref) {
+      const m = foundHref.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
+      if (m) author = m[1];
     }
+    finalUrl = `https://twitter.com/${author}/status/${id}`;
   }
 
-  // 마지막 폴백: r.jina.ai 정적 렌더로 /status/<id>만 추출
-  try {
-    const fallback = `https://r.jina.ai/http://nitter.net/${encodeURIComponent(username)}`;
-    const res = await fetch(fallback);
-    if (res.ok) {
-      const text = await res.text();
-      const m =
-        text.match(new RegExp(`/${username}/status/(\\d+)`)) ||
-        text.match(/\/i\/status\/(\d+)/) ||
-        text.match(/\/[A-Za-z0-9_]{1,15}\/status\/(\d+)/);
-      if (m) {
-        const id = m[1];
-        return `https://twitter.com/i/web/status/${id}`;
-      }
-    }
-  } catch (_) {}
-
-  throw new Error("최신 트윗 링크를 찾지 못했습니다.");
+  return finalUrl;
 }
 
-// ── { id, url }로 래핑 (dedup에 필요)
+// 2) 래퍼: { id, url } 형태로 반환 (dedup에 쓰기 좋게)
 async function fetchLatestTweet(username) {
   const url = await fetchLatestTweetUrl(username);
   const m = url.match(/\/status\/(\d+)/);
@@ -183,7 +146,7 @@ async function sendToDiscord(content) {
   const res = await fetch(webhook, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
+    body: JSON.stringify({ content }),
   });
   if (!res.ok) throw new Error(`Discord 전송 실패: ${res.status} ${await res.text()}`);
 }
