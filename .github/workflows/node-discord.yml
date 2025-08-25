@@ -2,8 +2,8 @@ name: Node.js Discord Test
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/12000 * * * *"   # 10분마다 (UTC 기준!)
+  # schedule:
+  #   - cron: "*/12000 * * * *"   # 10분마다 (UTC 기준!)
 
 permissions:
   contents: write   # ← state.json을 커밋/푸시하려면 필요
